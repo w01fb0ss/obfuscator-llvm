@@ -12,15 +12,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "Flattening.h"
-#include "utils/Utils.h"
-#include "llvm/Analysis/AssumptionCache.h"
-#include "llvm/Analysis/LazyValueInfo.h"
-#include "llvm/IR/PassManager.h"
-#include "llvm/Passes/PassBuilder.h"
-#include "llvm/Passes/PassPlugin.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
-#include "llvm/Transforms/Utils/LowerSwitch.h"
 
 #include "utils/CryptoUtils.h"
 
@@ -28,10 +21,45 @@
 
 using namespace llvm;
 
+static cl::opt<bool> FlatteningArg("fla", cl::init(false),
+                                   cl::desc("Enable the flattening pass"));
+
 // Stats
 STATISTIC(Flattened, "Functions flattened");
 
-namespace llvm {
+namespace {
+struct Flattening : public FunctionPass {
+  static char ID; // Pass identification, replacement for typeid
+
+  Flattening() : FunctionPass(ID) {}
+
+  bool runOnFunction(Function &F);
+  bool flatten(Function *f);
+};
+} // namespace
+
+char Flattening::ID = 0;
+static RegisterPass<Flattening> X("flattening", "Call graph flattening");
+Pass *llvm::createFlattening() { return new Flattening(); }
+
+bool Flattening::runOnFunction(Function &F) {
+  Function *tmp = &F;
+  // Do we obfuscate
+  if (toObfuscate(FlatteningArg, tmp, "fla")) {
+    if (flatten(tmp)) {
+      ++Flattened;
+    }
+  }
+
+  return false;
+}
+
+PreservedAnalyses FlatteningObfuscatorPass::run(Function &F, FunctionAnalysisManager &AM){
+  Flattening fla;
+  fla.runOnFunction(F);
+
+  return PreservedAnalyses::none();
+}
 
 bool Flattening::flatten(Function *f) {
   std::vector<BasicBlock *> origBB;
@@ -40,12 +68,17 @@ bool Flattening::flatten(Function *f) {
   LoadInst *load;
   SwitchInst *switchI;
   AllocaInst *switchVar;
+
   // SCRAMBLER
   char scrambling_key[16];
   llvm::cryptoutils->get_bytes(scrambling_key, 16);
   // END OF SCRAMBLER
 
-#if LLVM_VERSION_MAJOR < 9
+#if LLVM_VERSION_MAJOR >= 9
+  // >=9.0, LowerSwitchPass depends on LazyValueInfoWrapperPass, which cause AssertError.
+  // So I move LowerSwitchPass into register function, just before FlatteningPass.
+#else
+  // Lower switch
   FunctionPass *lower = createLowerSwitchPass();
   lower->runOnFunction(*f);
 #endif
@@ -53,9 +86,6 @@ bool Flattening::flatten(Function *f) {
   // Save all original BB
   for (Function::iterator i = f->begin(); i != f->end(); ++i) {
     BasicBlock *tmp = &*i;
-    if (tmp->isEHPad() || tmp->isLandingPad()) {
-      return false;
-    }
     origBB.push_back(tmp);
 
     BasicBlock *bb = &*i;
@@ -68,6 +98,7 @@ bool Flattening::flatten(Function *f) {
   if (origBB.size() <= 1) {
     return false;
   }
+
   // Remove first BB
   origBB.erase(origBB.begin());
 
@@ -81,7 +112,8 @@ bool Flattening::flatten(Function *f) {
     br = cast<BranchInst>(insert->getTerminator());
   }
 
-  if (br != NULL) {
+  if ((br != NULL && br->isConditional()) ||
+      insert->getTerminator()->getNumSuccessors() > 1) {
     BasicBlock::iterator i = insert->end();
     --i;
 
@@ -103,12 +135,12 @@ bool Flattening::flatten(Function *f) {
       ConstantInt::get(Type::getInt32Ty(f->getContext()),
                        llvm::cryptoutils->scramble32(0, scrambling_key)),
       switchVar, insert);
+
   // Create main loop
   loopEntry = BasicBlock::Create(f->getContext(), "loopEntry", f, insert);
   loopEnd = BasicBlock::Create(f->getContext(), "loopEnd", f, insert);
 
-  load = new LoadInst(switchVar->getAllocatedType(), switchVar,
-                      "switchVar", loopEntry);
+  load = new LoadInst(switchVar->getAllocatedType(), switchVar, "switchVar", loopEntry);
 
   // Move first BB on top
   insert->moveBefore(loopEntry);
@@ -129,6 +161,7 @@ bool Flattening::flatten(Function *f) {
   f->begin()->getTerminator()->eraseFromParent();
 
   BranchInst::Create(loopEntry, &*f->begin());
+
   // Put all BB in the switch
   for (std::vector<BasicBlock *>::iterator b = origBB.begin();
        b != origBB.end(); ++b) {
@@ -144,6 +177,7 @@ bool Flattening::flatten(Function *f) {
         llvm::cryptoutils->scramble32(switchI->getNumCases(), scrambling_key)));
     switchI->addCase(numCase, i);
   }
+
   // Recalculate switchVar
   for (std::vector<BasicBlock *>::iterator b = origBB.begin();
        b != origBB.end(); ++b) {
@@ -221,47 +255,3 @@ bool Flattening::flatten(Function *f) {
 
   return true;
 }
-
-bool Flattening::runFlattening(Function &F) {
-  Function *tmp = &F;
-  // Do we obfuscate
-  if (toObfuscate(true, tmp, "fla")) {
-    if (flatten(tmp)) {
-      ++Flattened;
-      return true;
-    }
-  }
-
-  return false;
-}
-
-struct LegacyFlattening : public FunctionPass, public Flattening {
-  static char ID; // Pass identification, replacement for typeid
-  bool flag;
-
-  LegacyFlattening() : FunctionPass(ID) {}
-  LegacyFlattening(bool flag) : FunctionPass(ID) { this->flag = flag; }
-
-  bool runOnFunction(Function &F);
-};
-
-bool LegacyFlattening::runOnFunction(Function &F) { return runFlattening(F); }
-
-FlatteningObfuscatorPass::FlatteningObfuscatorPass() {}
-
-PreservedAnalyses FlatteningObfuscatorPass::run(Function &F,
-                                                FunctionAnalysisManager &AM) {
-
-  PreservedAnalyses analysis = PreservedAnalyses::all();
-
-  analysis.intersect(LowerSwitchPass().run(F, AM));
-
-  analysis.intersect(runFlattening(F) ? PreservedAnalyses::none()
-                                      : PreservedAnalyses::all());
-
-  return analysis;
-}
-
-char LegacyFlattening::ID = 0;
-static RegisterPass<LegacyFlattening> X("flattening", "Call flattening");
-} // namespace llvm
