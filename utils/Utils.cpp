@@ -56,48 +56,72 @@ void fixStack(Function *f) {
   } while (tmpReg.size() != 0 || tmpPhi.size() != 0);
 }
 
-std::string readAnnotate(Function *f) {
-  std::string annotation = "";
-
+StringRef readAnnotate(Function *f, StringRef attr) {
   // Get annotation variable
-  GlobalVariable *glob =
-      f->getParent()->getGlobalVariable("llvm.global.annotations");
+  auto *glob = f->getParent()->getGlobalVariable("llvm.global.annotations");
 
-  if (glob != NULL) {
-    // Get the array
-    if (ConstantArray *ca = dyn_cast<ConstantArray>(glob->getInitializer())) {
-      for (unsigned i = 0; i < ca->getNumOperands(); ++i) {
-        // Get the struct
-        if (ConstantStruct *structAn =
-                dyn_cast<ConstantStruct>(ca->getOperand(i))) {
-          if (ConstantExpr *expr =
-                  dyn_cast<ConstantExpr>(structAn->getOperand(0))) {
-            // If it's a bitcast we can check if the annotation is concerning
-            // the current function
-            if (expr->getOpcode() == Instruction::BitCast &&
-                expr->getOperand(0) == f) {
-              ConstantExpr *note = cast<ConstantExpr>(structAn->getOperand(1));
-              // If it's a GetElementPtr, that means we found the variable
-              // containing the annotations
-              if (note->getOpcode() == Instruction::GetElementPtr) {
-                if (GlobalVariable *annoteStr =
-                        dyn_cast<GlobalVariable>(note->getOperand(0))) {
-                  if (ConstantDataSequential *data =
-                          dyn_cast<ConstantDataSequential>(
-                              annoteStr->getInitializer())) {
-                    if (data->isString()) {
-                      annotation += data->getAsString().lower() + " ";
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
+  if (glob == NULL) return "";
+
+  // Get the array
+  auto *ca = dyn_cast<ConstantArray>(glob->getInitializer());
+  if (!ca) return "";
+
+  for (unsigned i = 0; i < ca->getNumOperands(); ++i) {
+    // Get the struct
+    auto *structAn = dyn_cast<ConstantStruct>(ca->getOperand(i));
+    if (!structAn) continue;
+
+    auto *expr = dyn_cast<ConstantExpr>(structAn->getOperand(0));
+    if (!expr) continue;
+
+    // If it's a bitcast we can check if the annotation is concerning
+    // the current function
+    if (expr->getOpcode() != Instruction::BitCast ||
+        expr->getOperand(0) != f) continue;
+
+    auto *note = cast<ConstantExpr>(structAn->getOperand(1));
+    // If it's a GetElementPtr, that means we found the variable
+    // containing the annotations
+    if (note->getOpcode() != Instruction::GetElementPtr) continue;
+
+    auto *annoteStr = dyn_cast<GlobalVariable>(note->getOperand(0));
+    if (!annoteStr) continue;
+
+    auto *data = dyn_cast<ConstantDataSequential>(annoteStr->getInitializer());
+    if (!data) continue;
+
+    if (!data->isString()) continue;
+
+    auto attr_pos = static_cast<std::size_t>(-1);
+    auto attribute = data->getAsString();
+    while (true){
+      if (attr_pos != std::string::npos)
+        attr_pos = attribute.find(attr, attr_pos + attr.size());
+      else
+        attr_pos = attribute.find(attr);
+      if (attr_pos == std::string::npos) break;
+      if (attr_pos != 0 && !std::isspace(attribute[attr_pos - 1])) continue;
+      if (attr_pos + attr.size() < attribute.size() &&
+          !std::isspace(attribute[attr_pos + attr.size()]) &&
+          attribute[attr_pos + attr.size()] != '=' &&
+          attribute[attr_pos + attr.size()] != '\0')
+        continue;
+
+      auto assign = attribute.find('=');
+      if (assign != std::string::npos){
+        auto value = assign + 1;
+        while (std::isspace(attribute[value]))
+          ++value;
+        auto end = value + 1;
+        while (end < attribute.size() && !std::isspace(attribute[end]) && attribute[end] != '\0')
+          ++end;
+        return attribute.substr(value, end - value);
+      } else
+        return "1";
     }
   }
-  return annotation;
+
+  return "";
 }
 
 bool toObfuscate(bool flag, Function *f, std::string attribute) {
@@ -117,12 +141,12 @@ bool toObfuscate(bool flag, Function *f, std::string attribute) {
   // We have to check the nofla flag first
   // Because .find("fla") is true for a string like "fla" or
   // "nofla"
-  if (readAnnotate(f).find(attrNo) != std::string::npos) {
+  if (readAnnotate(f, attrNo).find(attrNo) != std::string::npos) {
     return false;
   }
 
   // If fla annotations
-  if (readAnnotate(f).find(attr) != std::string::npos) {
+  if (readAnnotate(f, attrNo).find(attr) != std::string::npos) {
     return true;
   }
 

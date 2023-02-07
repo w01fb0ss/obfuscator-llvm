@@ -8,7 +8,7 @@
 
 namespace llvm {
 void fixStack(Function *f);
-std::string readAnnotate(Function *f);
+llvm::StringRef readAnnotate(llvm::Function* f, llvm::StringRef attr);
 bool toObfuscate(bool flag, Function *f, std::string attribute);
 } // namespace llvm
 

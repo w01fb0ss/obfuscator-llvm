@@ -11,10 +11,9 @@
 //
 //===-----------------------------------------------------------------------===//
 
-#ifndef _BOGUSCONTROLFLOW_H_
-#define _BOGUSCONTROLFLOW_H_
+#ifndef _OBFUSCATION_BOGUSCONTROLFLOW_H_
+#define _OBFUSCATION_BOGUSCONTROLFLOW_H_
 
-// LLVM include
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/IR/BasicBlock.h"
@@ -31,68 +30,19 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
+#include "utils/CryptoUtils.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
 #include "llvm/Transforms/Utils/Cloning.h"
-#include <list>
+#include "llvm/IR/PassManager.h" // New PassManager
 
 namespace llvm {
-struct BogusControlFlow {
-  BogusControlFlow();
-  BogusControlFlow(bool flag);
-  bool flag;
-
-  bool runBogusControlFlow(Function &F);
-  void bogus(Function &F);
-
-  /* addBogusFlow
-   *
-   * Add bogus flow to a given basic block, according to the header's
-   * description
-   */
-  void addBogusFlow(BasicBlock *basicBlock, Function &F);
-
-  /* createAlteredBasicBlock
-   *
-   * This function return a basic block similar to a given one.
-   * It's inserted just after the given basic block.
-   * The instructions are similar but junk instructions are added between
-   * the cloned one. The cloned instructions' phi nodes, metadatas, uses and
-   * debug locations are adjusted to fit in the cloned basic block and
-   * behave nicely.
-   */
-  BasicBlock *createAlteredBasicBlock(BasicBlock *basicBlock,
-                                      const Twine &Name = "gen",
-                                      Function *F = 0);
-
-  /* doFinalization
-   *
-   * Overwrite FunctionPass method to apply the transformations to the whole
-   * module. This part obfuscate all the always true predicates of the module.
-   * More precisely, the condition which predicate is FCMP_TRUE.
-   * It also remove all the functions' basic blocks' and instructions' names.
-   */
-  bool doF(Module &M);
-};
-
-struct LegacyBogusControlFlow : public FunctionPass, public BogusControlFlow {
-  static char ID; // Pass identification
-  LegacyBogusControlFlow();
-  LegacyBogusControlFlow(bool flag);
-
-  /* runOnFunction
-   *
-   * Overwrite FunctionPass method to apply the transformation
-   * to the function. See header for more details.
-   */
-  bool runOnFunction(Function &F);
-
-}; // end of struct BogusControlFlow : public FunctionPass
-
-struct BogusControlFlowPass : public PassInfoMixin<BogusControlFlowPass>,
-                              public BogusControlFlow {
-  BogusControlFlowPass();
+Pass *createBogus();
+class BogusControlFlowPass : public PassInfoMixin<BogusControlFlowPass>{ // New PassManager
+public:
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
-};
 
+  static bool isRequired() { return true; }
+};
 } // namespace llvm
+
 #endif
